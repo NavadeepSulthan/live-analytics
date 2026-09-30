@@ -1,0 +1,49 @@
+{
+  "name": "live-analytics-dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "lint": "oxlint src",
+    "test": "vitest run",
+    "generate": "openapi-typescript ../api/openapi.yaml -o src/api/schema.gen.ts",
+    "format": "prettier --write src",
+    "format:check": "prettier --check src",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.14.13",
+    "d3-array": "^3.2.4",
+    "d3-scale": "^4.0.2",
+    "d3-shape": "^3.2.0",
+    "d3-time-format": "^4.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/d3-array": "^3.2.2",
+    "@types/d3-scale": "^4.0.9",
+    "@types/d3-shape": "^3.2.0",
+    "@types/d3-time-format": "^4.0.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "openapi-typescript": "^7.13.0",
+    "oxlint": "^1.81.0",
+    "prettier": "^3.9.9",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "openapi-typescript": {
+      "typescript": "$typescript"
+    }
+  }
+}

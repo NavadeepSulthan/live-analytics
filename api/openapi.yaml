@@ -1,0 +1,360 @@
+openapi: 3.0.3
+info:
+  title: Live Analytics API
+  version: 1.0.0
+  description: |
+    Telemetry ingestion and analytics query API.
+
+    - **Ingest** (`ingest` service): clients push batches of request events.
+    - **Query** (`query` service): pre-aggregated metrics, raw event search, and a live
+      Server-Sent Events stream for dashboards.
+
+    Tenancy comes from the API key: an ingest key can only write, a read key can only query,
+    and both are scoped to exactly one tenant.
+servers:
+  - url: http://localhost:8080
+    description: ingest
+  - url: http://localhost:8081
+    description: query
+
+security:
+  - ApiKey: []
+
+paths:
+  /v1/events:
+    post:
+      operationId: ingestEvents
+      summary: Ingest a batch of events
+      description: |
+        Validates each event independently. Valid events are durably written to the stream
+        (all in-sync replicas) before `202` is returned; invalid ones are reported by index.
+        Supports `Content-Encoding: gzip`.
+
+        Delivery semantics: once accepted, each event is stored exactly once (stream
+        redelivery is deduplicated by offset). On `503` or a network error, retry with the same
+        `eventId`s. That retry is at-least-once: if the failure was ambiguous (the write
+        succeeded but the response was lost), duplicates share an `eventId` and can be
+        identified with `uniqExact(event_id)`.
+      tags: [ingest]
+      parameters:
+        - in: header
+          name: Content-Encoding
+          required: false
+          schema: { type: string, enum: [gzip, identity] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IngestBatch' }
+      responses:
+        '202':
+          description: Batch accepted (possibly partially)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestResult' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '415': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Throttled' }
+        '503': { $ref: '#/components/responses/Throttled' }
+    get:
+      operationId: listEvents
+      summary: Search raw events, newest first (keyset pagination)
+      tags: [query]
+      security:
+        - BearerRead: []
+      parameters:
+        - { in: query, name: service, schema: { type: string } }
+        - { in: query, name: statusClass, schema: { type: string, enum: ['2xx', '3xx', '4xx', '5xx'] } }
+        - { in: query, name: cursor, description: Opaque cursor from a previous page, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: One page of events
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventPage' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/metrics/summary:
+    get:
+      operationId: getSummary
+      summary: Totals and latency percentiles over a trailing window
+      tags: [query]
+      security:
+        - BearerRead: []
+      parameters:
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/Service'
+      responses:
+        '200':
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Summary' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/metrics/timeseries:
+    get:
+      operationId: getTimeSeries
+      summary: Bucketed throughput, errors and latency percentiles
+      tags: [query]
+      security:
+        - BearerRead: []
+      parameters:
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/Service'
+        - in: query
+          name: stepSeconds
+          description: Bucket width. Chosen automatically (~300 buckets) when omitted.
+          schema: { type: integer, minimum: 1, maximum: 86400 }
+      responses:
+        '200':
+          description: Time series
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TimeSeries' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/metrics/services:
+    get:
+      operationId: listServices
+      summary: Per-service breakdown over a trailing window
+      tags: [query]
+      security:
+        - BearerRead: []
+      parameters:
+        - $ref: '#/components/parameters/Window'
+      responses:
+        '200':
+          description: Services ordered by request count
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ServiceStats' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/stream:
+    get:
+      operationId: streamLive
+      summary: Live metrics and sampled events (Server-Sent Events)
+      description: |
+        `text/event-stream` with two event types, each sent once per second:
+
+        - `event: ticks`: `data` is a JSON array of `LiveTick` for the last 10 seconds.
+          Events land a few hundred ms after they happen, so recent buckets are revised;
+          clients upsert by `ts` so late data corrects earlier points.
+        - `event: events`: `data` is a JSON array of up to 100 recent `StoredEvent`s
+          (clients deduplicate by `eventId`).
+
+        A comment line (`: ping`) is sent every 15 s so proxies keep the connection open.
+      tags: [query]
+      security:
+        - BearerRead: []
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/LiveTick' }
+        '401': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerRead:
+      type: http
+      scheme: bearer
+
+  parameters:
+    Window:
+      in: query
+      name: windowSeconds
+      description: Trailing window ending now.
+      schema: { type: integer, minimum: 1, maximum: 604800, default: 300 }
+    Service:
+      in: query
+      name: service
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Throttled:
+      description: Try again later (see Retry-After)
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    IngestBatch:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items: { $ref: '#/components/schemas/IngestEvent' }
+
+    IngestEvent:
+      type: object
+      description: One served HTTP request, as observed by the reporting service.
+      required: [eventId, timestamp, service, route, method, status, durationMs]
+      properties:
+        eventId: { type: string, format: uuid, description: Client-generated; reuse it when retrying }
+        timestamp:
+          type: string
+          format: date-time
+          description: When the request finished. Must be within the last 24 h and at most 5 min in the future.
+        service: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+        route: { type: string, minLength: 1, maxLength: 200 }
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS] }
+        status: { type: integer, minimum: 100, maximum: 599 }
+        durationMs: { type: number, format: float, minimum: 0, maximum: 600000 }
+        region: { type: string, maxLength: 32 }
+        userId: { type: string, maxLength: 128 }
+        attributes:
+          type: object
+          maxProperties: 20
+          additionalProperties: { type: string, maxLength: 256 }
+
+    IngestResult:
+      type: object
+      required: [accepted, rejected, errors]
+      properties:
+        accepted: { type: integer }
+        rejected: { type: integer }
+        errors:
+          type: array
+          description: First 20 rejections
+          items: { $ref: '#/components/schemas/IngestError' }
+
+    IngestError:
+      type: object
+      required: [index, message]
+      properties:
+        index: { type: integer, description: Position of the rejected event in the batch }
+        message: { type: string }
+
+    StoredEvent:
+      type: object
+      required: [eventId, timestamp, receivedAt, service, route, method, status, durationMs]
+      properties:
+        eventId: { type: string, format: uuid }
+        timestamp: { type: string, format: date-time }
+        receivedAt: { type: string, format: date-time }
+        service: { type: string }
+        route: { type: string }
+        method: { type: string }
+        status: { type: integer }
+        durationMs: { type: number, format: float }
+        region: { type: string }
+        userId: { type: string }
+
+    EventPage:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/StoredEvent' }
+        nextCursor:
+          type: string
+          description: Absent on the last page
+
+    LatencyPercentiles:
+      type: object
+      required: [p50, p95, p99]
+      properties:
+        p50: { type: number, format: double }
+        p95: { type: number, format: double }
+        p99: { type: number, format: double }
+
+    Summary:
+      type: object
+      required: [windowSeconds, requests, errors, requestsPerSecond, errorRate, latencyMs, queryMs]
+      properties:
+        windowSeconds: { type: integer }
+        requests: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        requestsPerSecond: { type: number, format: double }
+        errorRate: { type: number, format: double, description: 0..1, share of 5xx responses }
+        latencyMs: { $ref: '#/components/schemas/LatencyPercentiles' }
+        queryMs: { type: number, format: double, description: Server-side query time }
+
+    TimeSeriesPoint:
+      type: object
+      required: [ts, requests, errors, latencyMs]
+      properties:
+        ts: { type: string, format: date-time, description: Bucket start }
+        requests: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        latencyMs: { $ref: '#/components/schemas/LatencyPercentiles' }
+
+    TimeSeries:
+      type: object
+      required: [stepSeconds, points, queryMs]
+      properties:
+        stepSeconds: { type: integer }
+        points:
+          type: array
+          items: { $ref: '#/components/schemas/TimeSeriesPoint' }
+        queryMs: { type: number, format: double }
+
+    ServiceStats:
+      type: object
+      required: [service, requests, errors, errorRate, latencyMs]
+      properties:
+        service: { type: string }
+        requests: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        errorRate: { type: number, format: double }
+        latencyMs: { $ref: '#/components/schemas/LatencyPercentiles' }
+
+    LiveTick:
+      type: object
+      required: [ts, requests, errors, latencyMs, services]
+      properties:
+        ts: { type: string, format: date-time, description: Start of the one-second bucket }
+        requests: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        latencyMs: { $ref: '#/components/schemas/LatencyPercentiles' }
+        services:
+          type: array
+          items: { $ref: '#/components/schemas/ServiceTick' }
+
+    ServiceTick:
+      type: object
+      required: [service, requests, errors]
+      properties:
+        service: { type: string }
+        requests: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }

@@ -1,0 +1,23 @@
+server {
+  listen 80;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  # Security headers live only at server level: a location that declares its own add_header
+  # would silently drop these, so caching below uses `expires` instead.
+  # worker-src 'self' allows the live-feed Web Worker bundle.
+  add_header Content-Security-Policy "default-src 'self'; connect-src ${CSP_CONNECT_SRC}; worker-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "no-referrer" always;
+
+  # Hashed assets never change: cache for a year. The HTML shell must always revalidate.
+  location /assets/ {
+    expires 1y;
+    try_files $uri =404;
+  }
+
+  location / {
+    expires -1;
+    try_files $uri /index.html;
+  }
+}

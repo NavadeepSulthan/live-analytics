@@ -1,0 +1,7 @@
+# Generates Go types from api/openapi.yaml. Run: go generate ./...
+package: api
+generate:
+  models: true
+output: types.gen.go
+output-options:
+  skip-prune: true

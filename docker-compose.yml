@@ -1,0 +1,98 @@
+# Local stack for Live Analytics. All images are free/open-source.
+#   Infrastructure only (run services with `make run-*`):  docker compose up -d redpanda clickhouse jaeger
+#   Full stack (infra + services + dashboard):             docker compose --profile app up -d --build
+name: live-analytics
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v26.2.3
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports: ['19092:19092']
+    volumes: ['redpanda:/var/lib/redpanda/data']
+    healthcheck:
+      test: ['CMD-SHELL', "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 5s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.9.6.6
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-analytics-local-only}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    ports: ['9000:9000', '8123:8123']
+    volumes: ['clickhouse:/var/lib/clickhouse']
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ['CMD', 'clickhouse-client', '--user', 'analytics', '--password', '${CLICKHOUSE_PASSWORD:-analytics-local-only}', '-q', 'SELECT 1']
+      interval: 5s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/jaeger:v2.21.0
+    ports:
+      - '16686:16686' # UI
+      - '4318:4318' # OTLP/HTTP
+
+  # ---- Application (profile "app"): docker compose --profile app up -d --build ----
+  ingest:
+    profiles: [app]
+    build: .
+    command: ['/usr/local/bin/ingest']
+    environment: &app-env
+      API_KEYS: ${API_KEYS:-demo:ingest:demo-ingest-key-change-me,demo:read:demo-read-key-change-me-0}
+      KAFKA_BROKERS: redpanda:9092
+      CLICKHOUSE_ADDR: clickhouse:9000
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-analytics-local-only}
+      ALLOWED_ORIGINS: http://localhost:8088,http://localhost:5174
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    ports: ['8080:8080']
+    depends_on:
+      redpanda: { condition: service_healthy }
+
+  sink:
+    profiles: [app]
+    build: .
+    command: ['/usr/local/bin/sink']
+    environment: *app-env
+    depends_on:
+      redpanda: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+
+  query:
+    profiles: [app]
+    build: .
+    command: ['/usr/local/bin/query']
+    environment: *app-env
+    ports: ['8081:8081']
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      sink: { condition: service_started } # sink runs migrations
+
+  dashboard:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+      args:
+        VITE_QUERY_URL: http://localhost:8081
+    ports: ['8088:80']
+    depends_on: [query]
+
+volumes:
+  redpanda:
+  clickhouse:

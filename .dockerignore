@@ -1,0 +1,9 @@
+bin/
+dashboard/node_modules/
+dashboard/dist/
+dashboard/playwright-report/
+dashboard/test-results/
+.env
+.git
+docs/
+results/

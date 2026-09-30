@@ -1,0 +1,13 @@
+bin/
+.env
+.env.*
+!.env.example
+*.test
+*.out
+coverage.*
+dashboard/node_modules/
+dashboard/dist/
+dashboard/playwright-report/
+dashboard/test-results/
+results/*.json
+.DS_Store
