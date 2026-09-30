@@ -9,7 +9,7 @@ ARG VITE_QUERY_URL=http://localhost:8081
 ENV VITE_QUERY_URL=${VITE_QUERY_URL}
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM nginx:1.31-alpine
 ENV CSP_CONNECT_SRC="'self' http://localhost:8081"
 COPY dashboard/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
